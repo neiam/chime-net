@@ -1,0 +1,12 @@
+[package]
+name = "virtual_chime"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+chimenet = { path = "../.." }
+tokio = { version = "1.0", features = ["full"] }
+clap = { version = "4.0", features = ["derive"] }
+env_logger = "0.10"
+log = "0.4"
+anyhow = "1.0"

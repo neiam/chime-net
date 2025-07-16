@@ -1,0 +1,92 @@
+1. INTRODUCTION
+
+Distributed research and social development teams such as the SINKBONG, N2L, WANK, GNG CAPITAL RESEARCH consortia require distributed and ad-hoc synchronization protocols that have a tactile and chimey mouthfeel. While the present fully asynchronous modes of inter-location elocution provide a good overall rate of information interchange and [...]
+
+
+2. HIGH LEVEL REQUIREMENTS
+
+A CHIMENET node attached to a CHIMENET MUST provide a chimey sound when it chimes and overall vibe (our vibe curator is Jack Carrozzo).
+
+When a CHIME dost CHIME, it MUST NOT do so at 2 in the fuckin' morning unless the LOCAL CHIME GATING PROTOCOL has an output permitting a CHIME.
+
+
+3. CHIMENET MESH
+
+A CHIMENET node is only usable as a member of any number of a CHIMENET meshes, which comprises a set of CHIMENET nodes which have established communication with each other in an opt-in manner. An implementation of a CHIMENET node MUST support at least one mesh membership but MAY support membership in multiple meshes. This RFC will not cover multi-mesh support in depth, but the mimimum requirement if supporting multiple meshes is that once CHIMENET communication has activated, the CHIMENET node must present a DONOTDISTURB mode to all other meshes it is a member of.
+
+A CHIMENET mesh is full-mesh; every node of the mesh receives messages from, and sends them to, the entire mesh.
+
+
+4. LOCAL CHIME GATING PROTOCOL
+
+This section describes LOCAL CHIME GATING PROTOCOL (Hereafter, LCGP).
+
+
+4.1. LCGP MODES
+
+There are several possible MODES of the which any CHIMENET implemenation MUST support. These modes describe how an incoming CHIME message should be handled.
+
+* DONOTDISTURB - do not chime, for when people are sleeping or busy or some shit. It is not required to log ignored CHIME messages.
+
+* AVAILABLE - chime and activate CHIMENET COMMUNICATION if a POSITIVE RESPONSE is received from USER.
+
+* CHILL_GRINDING - chime and activate CHIMENET COMMUNICATION after 10 seconds unless a NEGATIVE RESPONSE is received from USER.
+
+* GRINDING - chime and immediately activate CHIMENET COMMUNICATION.
+
+
+At any time, the interface of the CHIMENET node MUST allow the local members to switch it into any MODE.
+
+
+4.2. LCGP MESSAGES
+
+All LCGP messages shall be [TBD type of encoding and authentication].
+
+All LCGP messages will have a timestamp at origin, in unix epoch.
+
+All LCGP messages MUST be supported by any compliant CHIMENET node.
+
+
+4.2.1. MODE_UPDATE
+
+A MODE_UPDATE shall be sent every 5 minutes by any online CHIMENET node. It will communicate to all CHIMENET nodes in the CHIMENET mesh the current LCGP MODE of the CHIMENET node.
+
+
+4.2.2. CHIME
+
+A CHIME shall be sent when a CHIMENET node's local user expresses intent CHIME the other nodes of a CHIMENET mesh via an interactive control. When this is sent, the CHIMENET node must also switch state into GRINDING mode.
+
+
+5. PHYSICAL DESIGN
+
+The details of physical design of the CHIMENET node is left as an implementation detail.
+
+The design must offer facility to communicate, in a manner acceptable to the local members of the CHIMENET at the CHIMENET node location, the current mode of the LOCAL CHIME GATING PROTOCOL.
+
+The interface of the CHIMENET node MUST provide a physical interface, whether tactile, sound or gesture based, or any other usable physical manifestation to allow providing a POSITIVE or NEGATIVE response to a CHIME.
+
+The interface of the CHIMENET node MUST provide a method of communicating to local members of the CHIMENET at minimum, whether or not one or more other nodes of the CHIMENET are in an LCGP MODE other-than DONOTDISTURB.
+
+The interface of the CHIMENET MAY provide more detailed data about what nodes are in what LCGP MODE.
+
+
+6. CHIMENET COMMUNICATION
+
+When a CHIMENET node whose LCGP mode and the response (or, per specification of the MODES, non-response) of local user(s) calls for activation, a audio-visual multi-user call shall be started (if one is not currently active on the mesh) and all nodes calling for communication activation MUST join it. A CHIMENET node whose LCGP mode or the response/non-response of local users does not call for activation MUST NOT join it.
+
+When a CHIMENET node user hangs up from CHIMENET COMMUNICATION, the CHIMENET node implementation MAY change the MODE of the local node to one of the other modes as per local implementation needs.
+
+
+7. STATUS OF THIS DOCUMENT
+
+This is an in-progress draft. Comments will be accepted and considered for inclusion or adaptation of the document.
+
+
+8. SOME TOPICS
+
+/<user>/c/l
+/<user>/c/<chime>/notes
+/<user>/c/<chime>/chords
+/<user>/c/<chime>/status
+/<user>/c/<chime>/ring
+
