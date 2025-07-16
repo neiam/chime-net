@@ -14,25 +14,35 @@
  * - GPIO 2: Status LED
  * - GPIO 4: User button (active LOW)
  * - GPIO 5: Buzzer/Speaker
+ * 
+ * Dependencies:
+ * - WiFi library (built-in)
+ * - PubSubClient library (MQTT)
+ * - ArduinoJson library (JSON parsing)
+ * 
+ * Install via Arduino Library Manager:
+ * - PubSubClient by Nick O'Leary
+ * - ArduinoJson by Benoit Blanchon
  */
 
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
-#include <EEPROM.h>
+#include <time.h>
 
-// Network configuration
+// ===== CONFIGURATION =====
 const char* WIFI_SSID = "YOUR_WIFI_SSID";
 const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
-const char* MQTT_SERVER = "localhost";
+const char* MQTT_SERVER = "192.168.1.100";  // Change to your MQTT broker IP
 const int MQTT_PORT = 1883;
+const char* USER_ID = "arduino_user";       // ChimeNet user ID
 
 // Hardware pins
 const int STATUS_LED_PIN = 2;
 const int USER_BUTTON_PIN = 4;
 const int BUZZER_PIN = 5;
 
-// LCGP modes
+// ===== LCGP MODES =====
 enum LcgpMode {
   DO_NOT_DISTURB,
   AVAILABLE,
@@ -40,20 +50,22 @@ enum LcgpMode {
   GRINDING
 };
 
-// Global variables
+// ===== GLOBAL VARIABLES =====
 WiFiClient espClient;
 PubSubClient client(espClient);
 String nodeId;
-String userId = "arduino_user";
 String chimeId;
 LcgpMode currentMode = AVAILABLE;
 unsigned long lastModeUpdate = 0;
+unsigned long lastStatusUpdate = 0;
 unsigned long lastButtonPress = 0;
 bool buttonPressed = false;
 bool ledState = false;
 unsigned long lastLedToggle = 0;
+String pendingChimeId = "";
+unsigned long chimeResponseDeadline = 0;
 
-// Chime configuration
+// ===== MUSICAL NOTES =====
 struct ChimeNote {
   float frequency;
   int duration;
@@ -68,6 +80,23 @@ const float NOTE_G4 = 392.00;
 const float NOTE_A4 = 440.00;
 const float NOTE_B4 = 493.88;
 const float NOTE_C5 = 523.25;
+const float NOTE_D5 = 587.33;
+const float NOTE_E5 = 659.25;
+
+// Map note names to frequencies
+float getNoteFrequency(String note) {
+  if (note == "C4") return NOTE_C4;
+  if (note == "D4") return NOTE_D4;
+  if (note == "E4") return NOTE_E4;
+  if (note == "F4") return NOTE_F4;
+  if (note == "G4") return NOTE_G4;
+  if (note == "A4") return NOTE_A4;
+  if (note == "B4") return NOTE_B4;
+  if (note == "C5") return NOTE_C5;
+  if (note == "D5") return NOTE_D5;
+  if (note == "E5") return NOTE_E5;
+  return NOTE_A4; // Default fallback
+}
 
 // Default chime pattern
 ChimeNote defaultChime[] = {
@@ -77,6 +106,7 @@ ChimeNote defaultChime[] = {
   {NOTE_C5, 500}
 };
 
+// ===== SETUP =====
 void setup() {
   Serial.begin(115200);
   
@@ -85,13 +115,19 @@ void setup() {
   pinMode(USER_BUTTON_PIN, INPUT_PULLUP);
   pinMode(BUZZER_PIN, OUTPUT);
   
-  // Generate unique node ID
-  nodeId = "arduino_" + String(ESP.getChipId(), HEX);
-  chimeId = "chime_" + String(ESP.getChipId(), HEX);
+  // Generate unique node ID based on MAC address
+  String mac = WiFi.macAddress();
+  mac.replace(":", "");
+  nodeId = "arduino_" + mac;
+  chimeId = "chime_" + mac;
   
   Serial.println("ChimeNet Arduino Node Starting");
   Serial.println("Node ID: " + nodeId);
   Serial.println("Chime ID: " + chimeId);
+  Serial.println("User ID: " + String(USER_ID));
+  
+  // Initialize time
+  configTime(0, 0, "pool.ntp.org");
   
   // Connect to WiFi
   setupWiFi();
@@ -107,8 +143,14 @@ void setup() {
   publishChimeInfo();
   
   Serial.println("ChimeNet node ready!");
+  Serial.println("Press button to cycle through modes:");
+  Serial.println("1. Available (normal blink)");
+  Serial.println("2. Chill Grinding (fast blink)");
+  Serial.println("3. Grinding (solid LED)");
+  Serial.println("4. Do Not Disturb (slow blink)");
 }
 
+// ===== MAIN LOOP =====
 void loop() {
   // Handle MQTT
   if (!client.connected()) {
@@ -122,15 +164,19 @@ void loop() {
   // Handle status LED
   handleStatusLED();
   
-  // Send periodic mode updates (every 5 minutes)
-  if (millis() - lastModeUpdate > 300000) {
-    publishModeUpdate();
-    lastModeUpdate = millis();
+  // Handle pending chime responses
+  handlePendingResponses();
+  
+  // Send periodic status updates (every 5 minutes)
+  if (millis() - lastStatusUpdate > 300000) {
+    publishStatus();
+    lastStatusUpdate = millis();
   }
   
   delay(10);
 }
 
+// ===== WIFI SETUP =====
 void setupWiFi() {
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   
@@ -145,6 +191,7 @@ void setupWiFi() {
   Serial.println("IP address: " + WiFi.localIP().toString());
 }
 
+// ===== MQTT CONNECTION =====
 void connectMQTT() {
   while (!client.connected()) {
     Serial.println("Connecting to MQTT broker...");
@@ -153,12 +200,8 @@ void connectMQTT() {
       Serial.println("MQTT connected!");
       
       // Subscribe to ring requests
-      String ringTopic = "/" + userId + "/chime/" + chimeId + "/ring";
+      String ringTopic = "/" + String(USER_ID) + "/chime/" + chimeId + "/ring";
       client.subscribe(ringTopic.c_str());
-      
-      // Subscribe to mode updates from other nodes
-      String modeUpdateTopic = "/" + userId + "/chime/+/mode_update";
-      client.subscribe(modeUpdateTopic.c_str());
       
       Serial.println("Subscribed to: " + ringTopic);
       
@@ -169,6 +212,7 @@ void connectMQTT() {
   }
 }
 
+// ===== MQTT CALLBACK =====
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
   String message;
   for (int i = 0; i < length; i++) {
@@ -181,66 +225,106 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   String topicStr = String(topic);
   if (topicStr.endsWith("/ring")) {
     handleRingRequest(message);
-  } else if (topicStr.indexOf("/mode_update") != -1) {
-    handleModeUpdate(message);
   }
 }
 
+// ===== HANDLE RING REQUEST =====
 void handleRingRequest(String message) {
   Serial.println("Handling ring request: " + message);
   
   // Parse JSON message
   DynamicJsonDocument doc(1024);
-  deserializeJson(doc, message);
+  DeserializationError error = deserializeJson(doc, message);
+  
+  if (error) {
+    Serial.println("Failed to parse ring request JSON");
+    return;
+  }
+  
+  String requestChimeId = doc["chime_id"];
+  String requestUser = doc["user"];
   
   // Check if we should chime based on current mode
   bool shouldChime = false;
   bool shouldAutoRespond = false;
+  String autoResponseType = "";
   
   switch (currentMode) {
     case DO_NOT_DISTURB:
       shouldChime = false;
+      Serial.println("Mode: DoNotDisturb - blocking chime");
       break;
     case AVAILABLE:
       shouldChime = true;
       shouldAutoRespond = false;
+      Serial.println("Mode: Available - chiming, waiting for user response");
       break;
     case CHILL_GRINDING:
       shouldChime = true;
-      shouldAutoRespond = false; // Will auto-respond after 10 seconds
+      shouldAutoRespond = false;
+      Serial.println("Mode: ChillGrinding - chiming, will auto-respond positive in 10s");
+      // Set up auto-response after 10 seconds
+      pendingChimeId = requestChimeId;
+      chimeResponseDeadline = millis() + 10000;
       break;
     case GRINDING:
       shouldChime = true;
       shouldAutoRespond = true;
+      autoResponseType = "Positive";
+      Serial.println("Mode: Grinding - chiming and auto-responding positive");
       break;
   }
   
   if (shouldChime) {
+    // Parse notes and chords from the request
+    JsonArray notes = doc["notes"];
+    JsonArray chords = doc["chords"];
+    
     // Play the chime
-    playChime();
+    playChime(notes, chords);
     
     // Handle response based on mode
     if (shouldAutoRespond) {
-      sendResponse(true);
-    } else {
-      // Wait for user response or timeout
-      waitForUserResponse();
+      sendResponse(autoResponseType, requestChimeId);
     }
   }
 }
 
-void handleModeUpdate(String message) {
-  // Parse mode update from other nodes
-  DynamicJsonDocument doc(1024);
-  deserializeJson(doc, message);
+// ===== PLAY CHIME =====
+void playChime(JsonArray notes, JsonArray chords) {
+  Serial.println("Playing chime!");
   
-  String fromNode = doc["node_id"];
-  String mode = doc["mode"];
+  // If specific notes are provided, play them
+  if (notes.size() > 0) {
+    for (JsonVariant note : notes) {
+      String noteStr = note.as<String>();
+      float frequency = getNoteFrequency(noteStr);
+      tone(BUZZER_PIN, frequency, 300);
+      delay(350);
+    }
+  } else {
+    // Play default chime pattern
+    for (int i = 0; i < sizeof(defaultChime) / sizeof(defaultChime[0]); i++) {
+      tone(BUZZER_PIN, defaultChime[i].frequency, defaultChime[i].duration);
+      delay(defaultChime[i].duration + 50);
+    }
+  }
   
-  Serial.println("Mode update from " + fromNode + ": " + mode);
-  // Could use this to update UI or decide communication activation
+  noTone(BUZZER_PIN);
 }
 
+// ===== HANDLE PENDING RESPONSES =====
+void handlePendingResponses() {
+  // Handle ChillGrinding auto-response
+  if (pendingChimeId != "" && millis() > chimeResponseDeadline) {
+    Serial.println("Auto-responding positive after timeout");
+    sendResponse("Positive", pendingChimeId);
+    pendingChimeId = "";
+    chimeResponseDeadline = 0;
+  }
+}
+
+// ===== BUTTON HANDLING =====
 void handleButton() {
   bool buttonState = digitalRead(USER_BUTTON_PIN) == LOW;
   
@@ -248,7 +332,16 @@ void handleButton() {
     buttonPressed = true;
     lastButtonPress = millis();
     
-    // Cycle through modes
+    // If there's a pending chime response, respond positively
+    if (pendingChimeId != "") {
+      Serial.println("User responded positively to chime");
+      sendResponse("Positive", pendingChimeId);
+      pendingChimeId = "";
+      chimeResponseDeadline = 0;
+      return;
+    }
+    
+    // Otherwise, cycle through modes
     currentMode = (LcgpMode)((currentMode + 1) % 4);
     
     Serial.print("Mode changed to: ");
@@ -267,12 +360,13 @@ void handleButton() {
         break;
     }
     
-    publishModeUpdate();
+    publishStatus();
   } else if (!buttonState && buttonPressed) {
     buttonPressed = false;
   }
 }
 
+// ===== STATUS LED HANDLING =====
 void handleStatusLED() {
   unsigned long now = millis();
   
@@ -301,33 +395,15 @@ void handleStatusLED() {
   }
 }
 
-void playChime() {
-  Serial.println("Playing chime!");
-  
-  // Play default chime pattern
-  for (int i = 0; i < sizeof(defaultChime) / sizeof(defaultChime[0]); i++) {
-    tone(BUZZER_PIN, defaultChime[i].frequency, defaultChime[i].duration);
-    delay(defaultChime[i].duration + 50);
-  }
-  
-  noTone(BUZZER_PIN);
-}
-
-void waitForUserResponse() {
-  // In a real implementation, this would wait for user input
-  // For now, we'll just send a positive response after a short delay
-  delay(2000);
-  sendResponse(true);
-}
-
-void sendResponse(bool positive) {
-  String responseTopic = "/" + userId + "/chime/" + chimeId + "/response";
+// ===== SEND RESPONSE =====
+void sendResponse(String responseType, String originalChimeId) {
+  String responseTopic = "/" + String(USER_ID) + "/chime/" + chimeId + "/response";
   
   DynamicJsonDocument doc(1024);
-  doc["timestamp"] = "2024-01-01T00:00:00Z"; // Should use real timestamp
-  doc["response"] = positive ? "Positive" : "Negative";
+  doc["timestamp"] = getISOTimestamp();
+  doc["response"] = responseType;
   doc["node_id"] = nodeId;
-  doc["original_chime_id"] = chimeId;
+  doc["original_chime_id"] = originalChimeId;
   
   String response;
   serializeJson(doc, response);
@@ -336,41 +412,52 @@ void sendResponse(bool positive) {
   Serial.println("Sent response: " + response);
 }
 
+// ===== PUBLISH CHIME INFO =====
 void publishChimeInfo() {
   // Publish chime list
-  String listTopic = "/" + userId + "/chime/list";
+  String listTopic = "/" + String(USER_ID) + "/chime/list";
   DynamicJsonDocument listDoc(1024);
-  listDoc["user"] = userId;
-  listDoc["timestamp"] = "2024-01-01T00:00:00Z";
+  listDoc["user"] = USER_ID;
+  listDoc["timestamp"] = getISOTimestamp();
   
   JsonArray chimes = listDoc.createNestedArray("chimes");
   JsonObject chime = chimes.createNestedObject();
   chime["id"] = chimeId;
   chime["name"] = "Arduino Chime";
   chime["description"] = "Hardware chime node";
-  chime["created_at"] = "2024-01-01T00:00:00Z";
+  chime["created_at"] = getISOTimestamp();
   
   JsonArray notes = chime.createNestedArray("notes");
   notes.add("C4");
+  notes.add("D4");
   notes.add("E4");
+  notes.add("F4");
   notes.add("G4");
+  notes.add("A4");
+  notes.add("B4");
   notes.add("C5");
   
   JsonArray chords = chime.createNestedArray("chords");
   chords.add("C");
   chords.add("Am");
+  chords.add("F");
+  chords.add("G");
   
   String listMessage;
   serializeJson(listDoc, listMessage);
   client.publish(listTopic.c_str(), listMessage.c_str(), true);
   
   // Publish notes
-  String notesTopic = "/" + userId + "/chime/" + chimeId + "/notes";
+  String notesTopic = "/" + String(USER_ID) + "/chime/" + chimeId + "/notes";
   DynamicJsonDocument notesDoc(512);
   JsonArray notesArray = notesDoc.to<JsonArray>();
   notesArray.add("C4");
+  notesArray.add("D4");
   notesArray.add("E4");
+  notesArray.add("F4");
   notesArray.add("G4");
+  notesArray.add("A4");
+  notesArray.add("B4");
   notesArray.add("C5");
   
   String notesMessage;
@@ -378,11 +465,13 @@ void publishChimeInfo() {
   client.publish(notesTopic.c_str(), notesMessage.c_str(), true);
   
   // Publish chords
-  String chordsTopic = "/" + userId + "/chime/" + chimeId + "/chords";
+  String chordsTopic = "/" + String(USER_ID) + "/chime/" + chimeId + "/chords";
   DynamicJsonDocument chordsDoc(512);
   JsonArray chordsArray = chordsDoc.to<JsonArray>();
   chordsArray.add("C");
   chordsArray.add("Am");
+  chordsArray.add("F");
+  chordsArray.add("G");
   
   String chordsMessage;
   serializeJson(chordsDoc, chordsMessage);
@@ -392,13 +481,14 @@ void publishChimeInfo() {
   publishStatus();
 }
 
+// ===== PUBLISH STATUS =====
 void publishStatus() {
-  String statusTopic = "/" + userId + "/chime/" + chimeId + "/status";
+  String statusTopic = "/" + String(USER_ID) + "/chime/" + chimeId + "/status";
   
   DynamicJsonDocument doc(1024);
   doc["chime_id"] = chimeId;
   doc["online"] = true;
-  doc["last_seen"] = "2024-01-01T00:00:00Z";
+  doc["last_seen"] = getISOTimestamp();
   doc["node_id"] = nodeId;
   
   String modeStr;
@@ -421,38 +511,19 @@ void publishStatus() {
   String statusMessage;
   serializeJson(doc, statusMessage);
   client.publish(statusTopic.c_str(), statusMessage.c_str(), true);
+  
+  Serial.println("Published status: " + modeStr);
 }
 
-void publishModeUpdate() {
-  String modeUpdateTopic = "/" + userId + "/chime/" + chimeId + "/mode_update";
-  
-  DynamicJsonDocument doc(1024);
-  doc["timestamp"] = "2024-01-01T00:00:00Z";
-  doc["node_id"] = nodeId;
-  
-  String modeStr;
-  switch (currentMode) {
-    case DO_NOT_DISTURB:
-      modeStr = "DoNotDisturb";
-      break;
-    case AVAILABLE:
-      modeStr = "Available";
-      break;
-    case CHILL_GRINDING:
-      modeStr = "ChillGrinding";
-      break;
-    case GRINDING:
-      modeStr = "Grinding";
-      break;
+// ===== UTILITY FUNCTIONS =====
+String getISOTimestamp() {
+  time_t now;
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo)) {
+    return "2025-01-01T00:00:00Z";
   }
-  doc["mode"] = modeStr;
   
-  String modeUpdateMessage;
-  serializeJson(doc, modeUpdateMessage);
-  client.publish(modeUpdateTopic.c_str(), modeUpdateMessage.c_str());
-  
-  // Also publish updated status
-  publishStatus();
-  
-  Serial.println("Published mode update: " + modeStr);
+  char timestamp[32];
+  strftime(timestamp, sizeof(timestamp), "%Y-%m-%dT%H:%M:%SZ", &timeinfo);
+  return String(timestamp);
 }
