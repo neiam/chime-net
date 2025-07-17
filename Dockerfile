@@ -1,12 +1,20 @@
 # Build stage
 FROM rust:1.86-slim as builder
 
-# Install dependencies
+# Install build dependencies
 RUN apt-get update && apt-get install -y \
     pkg-config \
     libssl-dev \
     libasound2-dev \
+    cmake \
+    build-essential \
+    git \
+    curl \
     && rm -rf /var/lib/apt/lists/*
+
+# Set environment variables to help paho-mqtt-sys build from source
+ENV PAHO_MQTT_C_LIB_DIR=""
+ENV PAHO_MQTT_C_INC_DIR=""
 
 # Set working directory
 WORKDIR /app

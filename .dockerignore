@@ -18,7 +18,8 @@ debug_ring_flow
 RFC.txt
 *.txt
 
-# Test scripts
+# Scripts
+build.sh
 test_*.sh
 
 # Temporary files

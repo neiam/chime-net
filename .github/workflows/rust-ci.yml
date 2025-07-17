@@ -34,17 +34,17 @@ jobs:
         run: |
           if command -v apt-get &> /dev/null; then
             sudo apt-get update
-            sudo apt-get install -y pkg-config libssl-dev libasound2-dev
+            sudo apt-get install -y pkg-config libssl-dev libasound2-dev cmake build-essential
           elif command -v yum &> /dev/null; then
-            sudo yum install -y pkgconfig openssl-devel alsa-lib-devel
+            sudo yum install -y pkgconfig openssl-devel alsa-lib-devel cmake gcc-c++ make
           elif command -v dnf &> /dev/null; then
-            sudo dnf install -y pkgconfig openssl-devel alsa-lib-devel
+            sudo dnf install -y pkgconfig openssl-devel alsa-lib-devel cmake gcc-c++ make
           elif command -v pacman &> /dev/null; then
-            sudo pacman -Sy --noconfirm pkgconf openssl alsa-lib
+            sudo pacman -Sy --noconfirm pkgconf openssl alsa-lib cmake gcc make
           elif command -v apk &> /dev/null; then
-            sudo apk add --no-cache pkgconfig openssl-dev alsa-lib-dev
+            sudo apk add --no-cache pkgconfig openssl-dev alsa-lib-dev cmake build-base
           else
-            echo "Package manager not found. Please install pkg-config, openssl-dev, and alsa-lib-dev manually."
+            echo "Package manager not found. Please install pkg-config, openssl-dev, alsa-lib-dev, cmake, and build tools manually."
             exit 1
           fi
 
@@ -52,7 +52,7 @@ jobs:
         if: runner.os == 'Linux' && !contains(matrix.runner, 'self-hosted')
         run: |
           sudo apt-get update
-          sudo apt-get install -y pkg-config libssl-dev libasound2-dev
+          sudo apt-get install -y pkg-config libssl-dev libasound2-dev cmake build-essential
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -76,21 +76,6 @@ jobs:
 
       - name: Run tests
         run: cargo test --verbose
-
-      - name: Run integration tests
-        run: |
-          if [ -f "./test_discover.sh" ]; then
-            echo "Running discovery tests..."
-            # ./test_discover.sh
-          fi
-          if [ -f "./test_enhanced_clients.sh" ]; then
-            echo "Running enhanced client tests..."
-            # ./test_enhanced_clients.sh
-          fi
-          if [ -f "./test_ring_fix.sh" ]; then
-            echo "Running ring fix tests..."
-            # ./test_ring_fix.sh
-          fi
 
       - name: Check formatting
         run: cargo fmt -- --check
@@ -165,17 +150,17 @@ jobs:
         run: |
           if command -v apt-get &> /dev/null; then
             sudo apt-get update
-            sudo apt-get install -y pkg-config libssl-dev libasound2-dev
+            sudo apt-get install -y pkg-config libssl-dev libasound2-dev cmake build-essential
           elif command -v yum &> /dev/null; then
-            sudo yum install -y pkgconfig openssl-devel alsa-lib-devel
+            sudo yum install -y pkgconfig openssl-devel alsa-lib-devel cmake gcc-c++ make
           elif command -v dnf &> /dev/null; then
-            sudo dnf install -y pkgconfig openssl-devel alsa-lib-devel
+            sudo dnf install -y pkgconfig openssl-devel alsa-lib-devel cmake gcc-c++ make
           elif command -v pacman &> /dev/null; then
-            sudo pacman -Sy --noconfirm pkgconf openssl alsa-lib
+            sudo pacman -Sy --noconfirm pkgconf openssl alsa-lib cmake gcc make
           elif command -v apk &> /dev/null; then
-            sudo apk add --no-cache pkgconfig openssl-dev alsa-lib-dev
+            sudo apk add --no-cache pkgconfig openssl-dev alsa-lib-dev cmake build-base
           else
-            echo "Package manager not found. Please install pkg-config, openssl-dev, and alsa-lib-dev manually."
+            echo "Package manager not found. Please install pkg-config, openssl-dev, alsa-lib-dev, cmake, and build tools manually."
             exit 1
           fi
 
@@ -183,13 +168,14 @@ jobs:
         if: runner.os == 'Linux' && !contains(matrix.os, 'self-hosted')
         run: |
           sudo apt-get update
-          sudo apt-get install -y pkg-config libssl-dev libasound2-dev
+          sudo apt-get install -y pkg-config libssl-dev libasound2-dev cmake build-essential
 
       - name: Install system dependencies (macOS)
         if: runner.os == 'macOS'
         run: |
           # macOS typically has the required audio frameworks built-in
-          echo "macOS audio dependencies should be available by default"
+          # Install cmake for paho-mqtt-sys if needed
+          brew install cmake
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable

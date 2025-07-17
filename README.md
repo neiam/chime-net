@@ -148,6 +148,10 @@ Mode updates are sent every 5 minutes to inform other nodes.
 ### Prerequisites
 - Rust (latest stable)
 - MQTT broker (e.g., Mosquitto)
+- System dependencies:
+  - Linux: `pkg-config`, `libssl-dev`, `libasound2-dev`, `cmake`, `build-essential`
+  - macOS: `cmake` (audio frameworks are built-in)
+  - Windows: Visual Studio Build Tools or similar
 
 ### Setup MQTT Broker
 ```bash
@@ -162,12 +166,42 @@ mosquitto_pub -h localhost -t test -m "Hello World"
 mosquitto_sub -h localhost -t test
 ```
 
+### Install System Dependencies
+
+#### Ubuntu/Debian
+```bash
+sudo apt-get update
+sudo apt-get install -y pkg-config libssl-dev libasound2-dev cmake build-essential
+```
+
+#### CentOS/RHEL/Fedora
+```bash
+# CentOS/RHEL
+sudo yum install -y pkgconfig openssl-devel alsa-lib-devel cmake gcc-c++ make
+
+# Fedora
+sudo dnf install -y pkgconfig openssl-devel alsa-lib-devel cmake gcc-c++ make
+```
+
+#### macOS
+```bash
+brew install cmake
+```
+
+#### Windows
+Install Visual Studio Build Tools or Visual Studio Community with C++ support.
+
 ### Build and Run
 ```bash
 # Clone repository
 git clone <repository-url>
 cd chimenet
 
+# Option 1: Use the build script (recommended)
+./build.sh
+
+# Option 2: Manual build
+# Install dependencies (see above)
 # Build all components
 cargo build --release
 
@@ -182,6 +216,15 @@ cargo run --bin ringer_client -- --user ringer
 
 # Test the system
 cargo run --bin test_client -- --target-user alice --command discover
+```
+
+### Build Script Options
+The `build.sh` script supports several options:
+```bash
+./build.sh --help            # Show help
+./build.sh --deps-only       # Only install dependencies
+./build.sh --build-only      # Only build (skip dependency installation)
+./build.sh --no-tests        # Skip running tests
 ```
 
 ## API Examples
