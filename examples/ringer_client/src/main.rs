@@ -5,6 +5,7 @@ use serde_json;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use tokio::io::{AsyncBufReadExt, BufReader};
 use uuid::Uuid;
 
 #[derive(Parser)]
@@ -31,15 +32,24 @@ struct DiscoveredChime {
     notes: Vec<String>,
     chords: Vec<String>,
     last_seen: chrono::DateTime<chrono::Utc>,
+    status: Option<ChimeStatus>,
+}
+
+#[derive(Debug, Clone)]
+struct UserInfo {
+    user: String,
+    chimes: Vec<DiscoveredChime>,
+    last_discovery: chrono::DateTime<chrono::Utc>,
 }
 
 type SharedState = Arc<RwLock<RingerState>>;
 
-#[derive(Debug)]
 struct RingerState {
     ringer_id: String,
     discovered_chimes: HashMap<String, DiscoveredChime>,
+    user_info: HashMap<String, UserInfo>,
     mqtt: Option<Arc<ChimeNetMqtt>>,
+    custom_states: HashMap<String, CustomLcgpState>,
 }
 
 impl RingerState {
@@ -47,13 +57,38 @@ impl RingerState {
         Self {
             ringer_id: Uuid::new_v4().to_string(),
             discovered_chimes: HashMap::new(),
+            user_info: HashMap::new(),
             mqtt: None,
+            custom_states: HashMap::new(),
         }
     }
     
     fn add_discovered_chime(&mut self, chime: DiscoveredChime) {
         let key = format!("{}/{}", chime.user, chime.chime_id);
+        
+        // Update user info
+        self.user_info.entry(chime.user.clone()).or_insert_with(|| UserInfo {
+            user: chime.user.clone(),
+            chimes: Vec::new(),
+            last_discovery: chrono::Utc::now(),
+        });
+        
+        if let Some(user_info) = self.user_info.get_mut(&chime.user) {
+            user_info.chimes.retain(|c| c.chime_id != chime.chime_id);
+            user_info.chimes.push(chime.clone());
+            user_info.last_discovery = chrono::Utc::now();
+        }
+        
         self.discovered_chimes.insert(key, chime);
+    }
+    
+    fn update_chime_status(&mut self, user: &str, chime_id: &str, status: ChimeStatus) {
+        let key = format!("{}/{}", user, chime_id);
+        
+        if let Some(chime) = self.discovered_chimes.get_mut(&key) {
+            chime.status = Some(status);
+            chime.last_seen = chrono::Utc::now();
+        }
     }
     
     fn get_chimes_for_user(&self, user: &str) -> Vec<DiscoveredChime> {
@@ -68,11 +103,39 @@ impl RingerState {
         self.discovered_chimes.values().cloned().collect()
     }
     
+    fn get_online_chimes(&self) -> Vec<DiscoveredChime> {
+        self.discovered_chimes
+            .values()
+            .filter(|chime| chime.status.as_ref().map_or(false, |s| s.online))
+            .cloned()
+            .collect()
+    }
+    
     fn find_chime_by_name(&self, user: &str, name: &str) -> Option<DiscoveredChime> {
         self.discovered_chimes
             .values()
             .find(|chime| chime.user == user && chime.name == name)
             .cloned()
+    }
+    
+    fn get_user_info(&self, user: &str) -> Option<UserInfo> {
+        self.user_info.get(user).cloned()
+    }
+    
+    fn get_all_users(&self) -> Vec<String> {
+        self.user_info.keys().cloned().collect()
+    }
+    
+    fn add_custom_state(&mut self, state: CustomLcgpState) {
+        self.custom_states.insert(state.name.clone(), state);
+    }
+    
+    fn get_custom_state(&self, name: &str) -> Option<CustomLcgpState> {
+        self.custom_states.get(name).cloned()
+    }
+    
+    fn get_all_custom_states(&self) -> Vec<CustomLcgpState> {
+        self.custom_states.values().cloned().collect()
     }
 }
 
@@ -90,8 +153,9 @@ async fn main() -> Result<()> {
     
     // Connect to MQTT
     let client_id = format!("ringer_{}_{}", args.user, state.read().await.ringer_id);
-    let mqtt = Arc::new(ChimeNetMqtt::new(&args.broker, &args.user, &client_id).await?);
+    let mut mqtt = ChimeNetMqtt::new(&args.broker, &args.user, &client_id).await?;
     mqtt.connect().await?;
+    let mqtt = Arc::new(mqtt);
     
     // Store MQTT client in state
     state.write().await.mqtt = Some(mqtt.clone());
@@ -117,9 +181,16 @@ async fn main() -> Result<()> {
     // Start interactive shell
     info!("Ringer client started! Available commands:");
     info!("  discover - Trigger discovery");
+    info!("  users - List all discovered users");
     info!("  list [user] - List available chimes");
+    info!("  online [user] - List online chimes");
+    info!("  status [user] [chime_name] - Show chime status");
     info!("  ring <user> <chime_name> [notes] [chords] - Ring a chime by name");
-    info!("  status - Show ringer status");
+    info!("  respond <user> <chime_name> <positive|negative> - Respond to a chime");
+    info!("  mode <user> <chime_name> <mode> - Set chime mode");
+    info!("  custom-state <name> <should_chime> [auto_response] - Create custom state");
+    info!("  states - List custom states");
+    info!("  help - Show this help message");
     info!("  quit - Exit");
     
     let state_clone = state.clone();
@@ -131,7 +202,8 @@ async fn main() -> Result<()> {
     tokio::signal::ctrl_c().await?;
     
     info!("Shutting down ringer client...");
-    mqtt.disconnect().await?;
+    // Note: In a real implementation, we'd need to properly handle MQTT disconnect
+    // since the connect/disconnect methods require mutable access
     
     Ok(())
 }
@@ -166,7 +238,7 @@ async fn start_monitoring(state: SharedState, mqtt: Arc<ChimeNetMqtt>) -> Result
     // Subscribe to all chime lists and statuses
     let topic = "/+/chime/+/+";
     
-    mqtt.client.subscribe(topic, 1, {
+    mqtt.subscribe(topic, 1, {
         let state = state.clone();
         move |topic, payload| {
             let state = state.clone();
@@ -216,6 +288,7 @@ async fn handle_mqtt_message(
                         notes: chime_info.notes,
                         chords: chime_info.chords,
                         last_seen: chrono::Utc::now(),
+                        status: None,
                     };
                     
                     state_guard.add_discovered_chime(discovered_chime);
@@ -226,15 +299,14 @@ async fn handle_mqtt_message(
         }
         "status" => {
             if let Ok(status) = serde_json::from_str::<ChimeStatus>(&payload) {
-                if status.online {
-                    // Update last seen time if we have this chime
-                    let mut state_guard = state.write().await;
-                    let key = format!("{}/{}", user, chime_id);
-                    
-                    if let Some(chime) = state_guard.discovered_chimes.get_mut(&key) {
-                        chime.last_seen = chrono::Utc::now();
-                    }
-                }
+                let mut state_guard = state.write().await;
+                state_guard.update_chime_status(user, chime_id, status);
+                info!("Updated status for {}/{}: online={}", user, chime_id, state_guard.discovered_chimes.get(&format!("{}/{}", user, chime_id)).map(|c| c.status.as_ref().map_or(false, |s| s.online)).unwrap_or(false));
+            }
+        }
+        "response" => {
+            if let Ok(response) = serde_json::from_str::<ChimeResponseMessage>(&payload) {
+                info!("Received response from {}/{}: {:?}", user, chime_id, response.response);
             }
         }
         _ => {}
@@ -245,6 +317,7 @@ async fn handle_mqtt_message(
 
 async fn run_interactive_shell(state: SharedState) {
     let stdin = tokio::io::stdin();
+    let mut reader = BufReader::new(stdin);
     let mut buffer = String::new();
     
     loop {
@@ -253,7 +326,7 @@ async fn run_interactive_shell(state: SharedState) {
         std::io::stdout().flush().unwrap();
         
         buffer.clear();
-        if stdin.read_line(&mut buffer).await.is_err() {
+        if reader.read_line(&mut buffer).await.is_err() {
             break;
         }
         
@@ -294,6 +367,26 @@ async fn handle_shell_command(command: &str, state: &SharedState) -> Result<()> 
             }
         }
         
+        "users" => {
+            let state_guard = state.read().await;
+            let users = state_guard.get_all_users();
+            
+            if users.is_empty() {
+                println!("No users discovered yet");
+            } else {
+                println!("Discovered users:");
+                for user in users {
+                    if let Some(user_info) = state_guard.get_user_info(&user) {
+                        println!("  {} ({} chimes, last seen: {})", 
+                            user, 
+                            user_info.chimes.len(), 
+                            user_info.last_discovery.format("%Y-%m-%d %H:%M:%S")
+                        );
+                    }
+                }
+            }
+        }
+        
         "list" => {
             let state_guard = state.read().await;
             
@@ -307,7 +400,11 @@ async fn handle_shell_command(command: &str, state: &SharedState) -> Result<()> 
                 } else {
                     println!("Chimes for user {}:", user);
                     for chime in chimes {
-                        println!("  {} ({})", chime.name, chime.chime_id);
+                        let status_str = match &chime.status {
+                            Some(status) => format!("online={}, mode={:?}", status.online, status.mode),
+                            None => "status=unknown".to_string(),
+                        };
+                        println!("  {} ({}) - {}", chime.name, chime.chime_id, status_str);
                         println!("    Notes: {:?}", chime.notes);
                         println!("    Chords: {:?}", chime.chords);
                         println!("    Last seen: {}", chime.last_seen.format("%Y-%m-%d %H:%M:%S"));
@@ -332,10 +429,74 @@ async fn handle_shell_command(command: &str, state: &SharedState) -> Result<()> 
                             .collect();
                         
                         for chime in user_chimes {
-                            println!("    {} ({})", chime.name, chime.chime_id);
+                            let status_str = match &chime.status {
+                                Some(status) => {
+                                    if status.online {
+                                        format!("online, mode={:?}", status.mode)
+                                    } else {
+                                        "offline".to_string()
+                                    }
+                                },
+                                None => "unknown".to_string(),
+                            };
+                            println!("    {} ({}) - {}", chime.name, chime.chime_id, status_str);
                         }
                     }
                 }
+            }
+        }
+        
+        "online" => {
+            let state_guard = state.read().await;
+            let chimes = if parts.len() > 1 {
+                let user = parts[1];
+                state_guard.get_chimes_for_user(user).into_iter()
+                    .filter(|c| c.status.as_ref().map_or(false, |s| s.online))
+                    .collect()
+            } else {
+                state_guard.get_online_chimes()
+            };
+            
+            if chimes.is_empty() {
+                println!("No online chimes found");
+            } else {
+                println!("Online chimes:");
+                for chime in chimes {
+                    let mode = chime.status.as_ref().map(|s| format!("{:?}", s.mode)).unwrap_or("unknown".to_string());
+                    println!("  {}/{} - mode: {}", chime.user, chime.name, mode);
+                }
+            }
+        }
+        
+        "status" => {
+            let state_guard = state.read().await;
+            
+            if parts.len() >= 3 {
+                let user = parts[1];
+                let chime_name = parts[2];
+                
+                if let Some(chime) = state_guard.find_chime_by_name(user, chime_name) {
+                    println!("Status for {}/{}:", user, chime_name);
+                    println!("  ID: {}", chime.chime_id);
+                    println!("  Last seen: {}", chime.last_seen.format("%Y-%m-%d %H:%M:%S"));
+                    
+                    if let Some(status) = &chime.status {
+                        println!("  Online: {}", status.online);
+                        println!("  Mode: {:?}", status.mode);
+                        println!("  Node ID: {}", status.node_id);
+                    } else {
+                        println!("  Status: Unknown");
+                    }
+                } else {
+                    println!("Chime '{}' not found for user '{}'", chime_name, user);
+                }
+            } else {
+                println!("Ringer ID: {}", state_guard.ringer_id);
+                println!("Discovered chimes: {}", state_guard.discovered_chimes.len());
+                println!("Custom states: {}", state_guard.custom_states.len());
+                
+                let users = state_guard.get_all_users();
+                println!("Users with chimes: {:?}", users);
             }
         }
         
@@ -372,7 +533,7 @@ async fn handle_shell_command(command: &str, state: &SharedState) -> Result<()> 
                         timestamp: chrono::Utc::now(),
                     };
                     
-                    mqtt.publish_chime_ring(&chime.chime_id, &ring_request).await?;
+                    mqtt.publish_chime_ring_to_user(user, &chime.chime_id, &ring_request).await?;
                     println!("Ring request sent to {} ({})", chime.name, chime.chime_id);
                 }
             } else {
@@ -380,18 +541,158 @@ async fn handle_shell_command(command: &str, state: &SharedState) -> Result<()> 
             }
         }
         
-        "status" => {
-            let state_guard = state.read().await;
-            println!("Ringer ID: {}", state_guard.ringer_id);
-            println!("Discovered chimes: {}", state_guard.discovered_chimes.len());
+        "respond" => {
+            if parts.len() < 4 {
+                println!("Usage: respond <user> <chime_name> <positive|negative>");
+                return Ok(());
+            }
             
-            let users: Vec<&str> = state_guard.discovered_chimes
-                .values()
-                .map(|c| c.user.as_str())
-                .collect::<std::collections::HashSet<_>>()
-                .into_iter()
-                .collect();
-            println!("Users with chimes: {:?}", users);
+            let user = parts[1];
+            let chime_name = parts[2];
+            let response_str = parts[3];
+            
+            let response = match response_str.to_lowercase().as_str() {
+                "positive" | "pos" | "yes" | "y" => ChimeResponse::Positive,
+                "negative" | "neg" | "no" | "n" => ChimeResponse::Negative,
+                _ => {
+                    println!("Invalid response. Use 'positive' or 'negative'");
+                    return Ok(());
+                }
+            };
+            
+            let state_guard = state.read().await;
+            if let Some(chime) = state_guard.find_chime_by_name(user, chime_name) {
+                if let Some(mqtt) = &state_guard.mqtt {
+                    let response_msg = ChimeResponseMessage {
+                        timestamp: chrono::Utc::now(),
+                        response: response.clone(),
+                        node_id: state_guard.ringer_id.clone(),
+                        original_chime_id: Some(chime.chime_id.clone()),
+                    };
+                    
+                    mqtt.publish_chime_response(&chime.chime_id, &response_msg).await?;
+                    println!("Response sent to {} ({}): {:?}", chime.name, chime.chime_id, response);
+                }
+            } else {
+                println!("Chime '{}' not found for user '{}'", chime_name, user);
+            }
+        }
+        
+        "mode" => {
+            if parts.len() < 4 {
+                println!("Usage: mode <user> <chime_name> <Available|DoNotDisturb|Grinding|ChillGrinding|Custom:name>");
+                return Ok(());
+            }
+            
+            let user = parts[1];
+            let chime_name = parts[2];
+            let mode_str = parts[3];
+            
+            let mode = match mode_str.to_lowercase().as_str() {
+                "available" => LcgpMode::Available,
+                "donotdisturb" | "dnd" => LcgpMode::DoNotDisturb,
+                "grinding" => LcgpMode::Grinding,
+                "chillgrinding" | "chill" => LcgpMode::ChillGrinding,
+                custom if custom.starts_with("custom:") => {
+                    let name = custom.strip_prefix("custom:").unwrap_or("").to_string();
+                    LcgpMode::Custom(name)
+                },
+                _ => {
+                    println!("Invalid mode. Use: Available, DoNotDisturb, Grinding, ChillGrinding, or Custom:name");
+                    return Ok(());
+                }
+            };
+            
+            let state_guard = state.read().await;
+            if let Some(_chime) = state_guard.find_chime_by_name(user, chime_name) {
+                println!("Mode change requests are not implemented yet (would set {} to {:?})", chime_name, mode);
+            } else {
+                println!("Chime '{}' not found for user '{}'", chime_name, user);
+            }
+        }
+        
+        "custom-state" => {
+            if parts.len() < 3 {
+                println!("Usage: custom-state <name> <true|false> [positive|negative]");
+                return Ok(());
+            }
+            
+            let name = parts[1].to_string();
+            let should_chime = match parts[2].to_lowercase().as_str() {
+                "true" | "yes" | "y" => true,
+                "false" | "no" | "n" => false,
+                _ => {
+                    println!("Invalid should_chime value. Use 'true' or 'false'");
+                    return Ok(());
+                }
+            };
+            
+            let auto_response = if parts.len() > 3 {
+                match parts[3].to_lowercase().as_str() {
+                    "positive" | "pos" => Some(ChimeResponse::Positive),
+                    "negative" | "neg" => Some(ChimeResponse::Negative),
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            
+            let custom_state = CustomLcgpState {
+                name: name.clone(),
+                should_chime,
+                auto_response: auto_response.clone(),
+                auto_response_delay: auto_response.as_ref().map(|_| 5000), // 5 seconds default
+                description: Some(format!("Custom state created by ringer client")),
+                priority: Some(100),
+                active_hours: None,
+                conditions: Vec::new(),
+            };
+            
+            let mut state_guard = state.write().await;
+            state_guard.add_custom_state(custom_state);
+            println!("Created custom state '{}' - should_chime: {}, auto_response: {:?}", name, should_chime, auto_response);
+        }
+        
+        "states" => {
+            let state_guard = state.read().await;
+            let states = state_guard.get_all_custom_states();
+            
+            if states.is_empty() {
+                println!("No custom states defined");
+            } else {
+                println!("Custom states:");
+                for state in states {
+                    println!("  {}", state.name);
+                    println!("    Should chime: {}", state.should_chime);
+                    println!("    Auto response: {:?}", state.auto_response);
+                    if let Some(delay) = state.auto_response_delay {
+                        println!("    Auto response delay: {}ms", delay);
+                    }
+                    if let Some(desc) = &state.description {
+                        println!("    Description: {}", desc);
+                    }
+                    if let Some(priority) = state.priority {
+                        println!("    Priority: {}", priority);
+                    }
+                    println!();
+                }
+            }
+        }
+        
+        "help" => {
+            println!("Available commands:");
+            println!("  discover - Trigger discovery");
+            println!("  users - List all discovered users");
+            println!("  list [user] - List available chimes");
+            println!("  online [user] - List online chimes");
+            println!("  status [user] [chime_name] - Show chime status");
+            println!("  ring <user> <chime_name> [notes] [chords] - Ring a chime by name");
+            println!("  respond <user> <chime_name> <positive|negative> - Respond to a chime");
+            println!("  mode <user> <chime_name> <mode> - Set chime mode");
+            println!("  custom-state <name> <should_chime> [auto_response] - Create custom state");
+            println!("  states - List custom states");
+            println!("  help - Show this help message");
+            println!("  quit - Exit");
         }
         
         "quit" => {
@@ -400,7 +701,7 @@ async fn handle_shell_command(command: &str, state: &SharedState) -> Result<()> 
         }
         
         _ => {
-            println!("Unknown command: {}", parts[0]);
+            println!("Unknown command: '{}'. Type 'help' for available commands.", parts[0]);
         }
     }
     

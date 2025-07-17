@@ -16,7 +16,9 @@ cpal = "0.15"
 log = "0.4"
 env_logger = "0.10"
 futures = "0.3"
-warp = "0.3"
+axum = "0.7"
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors"] }
 
 [[bin]]
 name = "virtual_chime"
