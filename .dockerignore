@@ -1,0 +1,33 @@
+# Build artifacts
+target/
+debug_ring_flow
+*.exe
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~
+
+# Documentation
+*.md
+RFC.txt
+*.txt
+
+# Test scripts
+test_*.sh
+
+# Temporary files
+*.tmp
+*.temp
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# CI/CD
+.github/
