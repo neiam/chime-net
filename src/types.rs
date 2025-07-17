@@ -7,6 +7,54 @@ pub enum LcgpMode {
     Available,
     ChillGrinding,
     Grinding,
+    Custom(String), // Custom state name
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CustomLcgpState {
+    pub name: String,
+    pub should_chime: bool,
+    pub auto_response: Option<ChimeResponse>,
+    pub auto_response_delay: Option<u64>, // milliseconds
+    pub description: Option<String>,
+    pub priority: Option<u8>, // 0-255, higher means higher priority
+    pub active_hours: Option<TimeRange>, // When this state is active
+    pub conditions: Vec<StateCondition>, // Conditions for auto-activation
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TimeRange {
+    pub start_hour: u8, // 0-23
+    pub start_minute: u8, // 0-59
+    pub end_hour: u8, // 0-23
+    pub end_minute: u8, // 0-59
+    pub days_of_week: Vec<u8>, // 0-6, Sunday = 0
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum StateCondition {
+    TimeRange(TimeRange),
+    UserPresence(bool), // true = present, false = away
+    SystemLoad(f32), // CPU load threshold
+    NetworkActivity(bool), // true = active, false = idle
+    CalendarBusy(bool), // true = in meeting, false = free
+    Custom(String, String), // key, value pairs for custom conditions
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BehaviorResult {
+    pub should_chime: bool,
+    pub auto_response: Option<ChimeResponse>,
+    pub delay_ms: Option<u64>,
+    pub next_state: Option<String>, // State to transition to after response
+}
+
+// Trait for custom behavior implementations
+pub trait CustomBehavior: Send + Sync {
+    fn on_incoming_chime(&self, chime: &ChimeMessage, state: &CustomLcgpState) -> BehaviorResult;
+    fn on_user_response(&self, response: &ChimeResponse, state: &CustomLcgpState) -> BehaviorResult;
+    fn on_timeout(&self, state: &CustomLcgpState) -> BehaviorResult;
+    fn evaluate_conditions(&self, state: &CustomLcgpState) -> bool;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -14,6 +62,7 @@ pub struct ModeUpdate {
     pub timestamp: DateTime<Utc>,
     pub mode: LcgpMode,
     pub node_id: String,
+    pub custom_state: Option<CustomLcgpState>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

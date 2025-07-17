@@ -33,3 +33,7 @@ path = "examples/ringer_client/src/main.rs"
 [[bin]]
 name = "test_client"
 path = "examples/test_client/src/main.rs"
+
+[[bin]]
+name = "custom_states"
+path = "examples/custom_states/src/main.rs"

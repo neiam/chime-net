@@ -97,17 +97,26 @@ impl ChimeInstance {
     }
     
     async fn handle_ring_request(
-        _topic: String,
+        topic: String,
         payload: String,
         mqtt: Arc<Mutex<ChimeNetMqtt>>,
         lcgp_handler: LcgpHandler,
         player: ChimePlayer,
         chime_id: String,
     ) -> Result<()> {
-        log::info!("Received ring request: {}", payload);
+        log::info!("Received ring request on topic '{}': {}", topic, payload);
         
         // Parse ring request
-        let ring_request: ChimeRingRequest = serde_json::from_str(&payload)?;
+        let ring_request: ChimeRingRequest = match serde_json::from_str(&payload) {
+            Ok(req) => req,
+            Err(e) => {
+                log::error!("Failed to parse ring request JSON: {}", e);
+                return Err(e.into());
+            }
+        };
+        
+        log::info!("Ring request details: user={}, chime_id={}, notes={:?}, chords={:?}", 
+                  ring_request.user, ring_request.chime_id, ring_request.notes, ring_request.chords);
         
         // Convert to chime message for LCGP handling
         let chime_message = ChimeMessage {
@@ -125,22 +134,29 @@ impl ChimeInstance {
         // Check if the chime should be played (all modes except DoNotDisturb)
         let should_play = lcgp_handler.should_chime(&chime_message);
         
+        log::info!("LCGP decision: should_play={}", should_play);
+        
         if should_play {
             let notes = ring_request.notes.as_deref();
             let chords = ring_request.chords.as_deref();
             let duration = ring_request.duration_ms;
             
-            log::info!("Playing chime with notes: {:?}, chords: {:?}", notes, chords);
+            log::info!("Playing chime with notes: {:?}, chords: {:?}, duration: {:?}ms", notes, chords, duration);
             
-            if let Err(e) = player.play_chime(notes, chords, duration) {
-                log::error!("Failed to play chime: {}", e);
+            match player.play_chime(notes, chords, duration) {
+                Ok(()) => log::info!("Chime played successfully"),
+                Err(e) => log::error!("Failed to play chime: {}", e),
             }
+        } else {
+            log::info!("Chime blocked by LCGP mode");
         }
         
         // Send response if there's an automatic response
         if let Some(response) = response {
-            mqtt.lock().await.publish_chime_response(&chime_id, &response).await?;
-            log::info!("Sent automatic response: {:?}", response.response);
+            match mqtt.lock().await.publish_chime_response(&chime_id, &response).await {
+                Ok(()) => log::info!("Sent automatic response: {:?}", response.response),
+                Err(e) => log::error!("Failed to send automatic response: {}", e),
+            }
         }
         
         Ok(())
@@ -186,6 +202,8 @@ impl ChimeInstance {
     }
     
     pub async fn ring_other_chime(&self, user: &str, chime_id: &str, notes: Option<Vec<String>>, chords: Option<Vec<String>>, duration_ms: Option<u64>) -> Result<()> {
+        log::info!("Attempting to ring chime {} for user {}", chime_id, user);
+        
         let ring_request = ChimeRingRequest {
             chime_id: chime_id.to_string(),
             user: user.to_string(),
@@ -195,9 +213,17 @@ impl ChimeInstance {
             timestamp: chrono::Utc::now(),
         };
         
-        self.mqtt.lock().await.publish_chime_ring(chime_id, &ring_request).await?;
-        
-        Ok(())
+        // CRITICAL FIX: Use publish_chime_ring_to_user to publish to the target user's topic
+        match self.mqtt.lock().await.publish_chime_ring_to_user(user, chime_id, &ring_request).await {
+            Ok(()) => {
+                log::info!("Successfully published ring request to /{}/chime/{}/ring", user, chime_id);
+                Ok(())
+            }
+            Err(e) => {
+                log::error!("Failed to publish ring request to /{}/chime/{}/ring: {}", user, chime_id, e);
+                Err(e)
+            }
+        }
     }
     
     pub async fn respond_to_chime(&self, response: ChimeResponse, original_chime_id: Option<String>) -> Result<()> {

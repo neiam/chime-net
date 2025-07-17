@@ -74,6 +74,28 @@ Testing utility for invoking chimes.
 cargo run --bin test_client -- --target-user alice --command "test-all"
 ```
 
+#### Custom States (`examples/custom_states/`)
+Advanced example showing how to define custom LCGP states with time-based activation, conditions, and custom behaviors.
+
+**Usage:**
+```bash
+cargo run --bin custom_states -- --user alice --name "Alice's Smart Chime"
+```
+
+**Features:**
+- Meeting state: Silent with auto-decline
+- Focus state: Delayed response with state transitions
+- Lunch state: Auto-accept during lunch hours
+- Condition-based state activation
+- Custom behavior implementations
+
+**Commands:**
+- `custom <state>` - Set custom state
+- `list-custom` - List available custom states
+- `condition <key> <value>` - Set condition for state evaluation
+
+See [Custom States Documentation](examples/custom_states/README.md) for details.
+
 #### Arduino Node (`arduino/chime_node/`)
 Hardware implementation for ESP32 with buzzer and LED.
 
@@ -100,12 +122,24 @@ The system uses the following MQTT topic structure:
 
 ## Local Chime Gating Protocol (LCGP)
 
-The LCGP defines four modes:
+The LCGP defines four standard modes:
 
 1. **DoNotDisturb**: Do not chime, ignore all requests
 2. **Available**: Chime and wait for user response
 3. **ChillGrinding**: Chime and auto-respond positive after 10 seconds
 4. **Grinding**: Chime and immediately respond positive
+
+### Custom States
+
+The system also supports custom LCGP states with advanced features:
+
+- **Time-based activation**: States active during specific hours/days
+- **Condition-based triggers**: Calendar, presence, system load conditions
+- **Custom behaviors**: Programmable response logic
+- **State transitions**: Automatic transitions between states
+- **Priority levels**: Higher priority states override lower ones
+
+See the [Custom States Example](examples/custom_states/) for implementation details.
 
 Mode updates are sent every 5 minutes to inform other nodes.
 

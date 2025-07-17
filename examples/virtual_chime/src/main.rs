@@ -60,6 +60,7 @@ async fn main() -> Result<()> {
     info!("  ring <user> <chime_id> [notes] [chords] - Ring another chime");
     info!("  respond <pos|neg> [chime_id] - Respond to a chime");
     info!("  status - Show current status");
+    info!("  debug - Show debug information");
     info!("  quit - Exit");
     
     // Handle user input
@@ -82,7 +83,7 @@ async fn main() -> Result<()> {
                 continue;
             }
             
-            if let Err(e) = handle_command(&chime_for_input, command).await {
+            if let Err(e) = handle_command(&chime_for_input, command, &args.user).await {
                 error!("Command error: {}", e);
             }
             
@@ -101,7 +102,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn handle_command(chime: &ChimeInstance, command: &str) -> Result<()> {
+async fn handle_command(chime: &ChimeInstance, command: &str, user: &str) -> Result<()> {
     let parts: Vec<&str> = command.split_whitespace().collect();
     
     if parts.is_empty() {
@@ -149,8 +150,22 @@ async fn handle_command(chime: &ChimeInstance, command: &str) -> Result<()> {
                 None
             };
             
-            chime.ring_other_chime(user, chime_id, notes, chords, None).await?;
-            println!("Sent ring request to {}/{}", user, chime_id);
+            println!("Sending ring request to user '{}' chime '{}'", user, chime_id);
+            if let Some(ref notes) = notes {
+                println!("  Notes: {:?}", notes);
+            }
+            if let Some(ref chords) = chords {
+                println!("  Chords: {:?}", chords);
+            }
+            
+            match chime.ring_other_chime(user, chime_id, notes, chords, None).await {
+                Ok(()) => {
+                    println!("✓ Ring request sent successfully");
+                }
+                Err(e) => {
+                    println!("✗ Failed to send ring request: {}", e);
+                }
+            }
         }
         
         "respond" => {
@@ -184,6 +199,20 @@ async fn handle_command(chime: &ChimeInstance, command: &str) -> Result<()> {
             println!("Mode: {:?}", chime.lcgp_node.get_mode());
             println!("Notes: {:?}", chime.info.notes);
             println!("Chords: {:?}", chime.info.chords);
+        }
+        
+        "debug" => {
+            println!("=== Debug Information ===");
+            println!("Chime ID: {}", chime.info.id);
+            println!("Chime Name: {}", chime.info.name);
+            println!("User: {}", user);
+            println!("LCGP Mode: {:?}", chime.lcgp_node.get_mode());
+            println!("Node ID: {}", chime.lcgp_node.node_id);
+            println!("Subscribe Topic: /{}/chime/{}/ring", user, chime.info.id);
+            println!("Available Notes: {:?}", chime.info.notes);
+            println!("Available Chords: {:?}", chime.info.chords);
+            println!("Created: {}", chime.info.created_at);
+            println!("=========================");
         }
         
         "quit" => {
