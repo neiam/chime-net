@@ -1,4 +1,3 @@
-use chimenet::*;
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -6,11 +5,12 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use std::result::Result as StdResult;
+use chimenet::*;
 use clap::Parser;
-use log::{info, error};
+use log::{error, info};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::result::Result as StdResult;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tower_http::cors::{Any, CorsLayer};
@@ -21,11 +21,11 @@ struct Args {
     /// MQTT broker URL
     #[arg(short, long, default_value = "tcp://localhost:1883")]
     broker: String,
-    
+
     /// HTTP server port
     #[arg(short, long, default_value = "3030")]
     port: u16,
-    
+
     /// Users to monitor (comma-separated)
     #[arg(short, long, default_value = "default_user")]
     users: String,
@@ -103,54 +103,68 @@ impl ServiceState {
             mqtt_clients: HashMap::new(),
         }
     }
-    
+
     fn add_event(&mut self, event: ChimeEvent) {
         self.events.push(event.clone());
-        
+
         // Update user stats
-        let user_stats = self.user_stats.entry(event.user.clone()).or_insert(UserStats {
-            user: event.user.clone(),
-            total_chimes: 0,
-            online_chimes: 0,
-            last_activity: None,
-            events_count: 0,
-        });
-        
+        let user_stats = self
+            .user_stats
+            .entry(event.user.clone())
+            .or_insert(UserStats {
+                user: event.user.clone(),
+                total_chimes: 0,
+                online_chimes: 0,
+                last_activity: None,
+                events_count: 0,
+            });
+
         user_stats.events_count += 1;
         user_stats.last_activity = Some(event.timestamp);
-        
+
         // Keep only last 1000 events
         if self.events.len() > 1000 {
             self.events.remove(0);
         }
     }
-    
+
     fn update_user_stats(&mut self, user: &str) {
-        let chimes = self.chime_lists.get(user).map(|cl| cl.chimes.len()).unwrap_or(0);
-        let online_chimes = self.chime_statuses.get(user).map(|statuses| {
-            statuses.values().filter(|s| s.online).count()
-        }).unwrap_or(0);
-        
-        let user_stats = self.user_stats.entry(user.to_string()).or_insert(UserStats {
-            user: user.to_string(),
-            total_chimes: 0,
-            online_chimes: 0,
-            last_activity: None,
-            events_count: 0,
-        });
-        
+        let chimes = self
+            .chime_lists
+            .get(user)
+            .map(|cl| cl.chimes.len())
+            .unwrap_or(0);
+        let online_chimes = self
+            .chime_statuses
+            .get(user)
+            .map(|statuses| statuses.values().filter(|s| s.online).count())
+            .unwrap_or(0);
+
+        let user_stats = self
+            .user_stats
+            .entry(user.to_string())
+            .or_insert(UserStats {
+                user: user.to_string(),
+                total_chimes: 0,
+                online_chimes: 0,
+                last_activity: None,
+                events_count: 0,
+            });
+
         user_stats.total_chimes = chimes;
         user_stats.online_chimes = online_chimes;
     }
-    
+
     fn get_status(&self) -> ServiceStatus {
         let recent_events = self.events.iter().rev().take(50).cloned().collect();
         let active_chimes = self.chime_lists.values().map(|cl| cl.chimes.len()).sum();
-        let online_chimes = self.chime_statuses.values()
+        let online_chimes = self
+            .chime_statuses
+            .values()
             .flat_map(|statuses| statuses.values())
             .filter(|s| s.online)
             .count();
-        
+
         ServiceStatus {
             uptime: self.start_time,
             monitored_users: self.monitored_users.clone(),
@@ -161,26 +175,32 @@ impl ServiceState {
             custom_states: self.custom_states.len(),
         }
     }
-    
+
     fn get_user_stats(&self, user: &str) -> Option<UserStats> {
         self.user_stats.get(user).cloned()
     }
-    
+
     fn get_chime_details(&self, user: &str, chime_id: &str) -> Option<ChimeDetails> {
-        let chime_info = self.chime_lists.get(user)?.chimes.iter()
+        let chime_info = self
+            .chime_lists
+            .get(user)?
+            .chimes
+            .iter()
             .find(|c| c.id == chime_id)?;
-        
+
         let status = self.chime_statuses.get(user)?.get(chime_id);
-        
-        let recent_events = self.events.iter()
+
+        let recent_events = self
+            .events
+            .iter()
             .filter(|e| e.user == user && e.chime_id == chime_id)
             .rev()
             .take(20)
             .cloned()
             .collect();
-        
+
         let response_stats = self.calculate_response_stats(user, chime_id);
-        
+
         Some(ChimeDetails {
             info: chime_info.clone(),
             status: status.cloned(),
@@ -188,37 +208,45 @@ impl ServiceState {
             response_stats,
         })
     }
-    
+
     fn calculate_response_stats(&self, user: &str, chime_id: &str) -> ResponseStats {
-        let ring_events: Vec<&ChimeEvent> = self.events.iter()
+        let ring_events: Vec<&ChimeEvent> = self
+            .events
+            .iter()
             .filter(|e| e.user == user && e.chime_id == chime_id && e.event_type == "ring")
             .collect();
-        
-        let response_events: Vec<&ChimeEvent> = self.events.iter()
+
+        let response_events: Vec<&ChimeEvent> = self
+            .events
+            .iter()
             .filter(|e| e.user == user && e.chime_id == chime_id && e.event_type == "response")
             .collect();
-        
-        let positive_responses = response_events.iter()
+
+        let positive_responses = response_events
+            .iter()
             .filter(|e| e.data.get("response").and_then(|v| v.as_str()) == Some("Positive"))
             .count();
-        
-        let negative_responses = response_events.iter()
+
+        let negative_responses = response_events
+            .iter()
             .filter(|e| e.data.get("response").and_then(|v| v.as_str()) == Some("Negative"))
             .count();
-        
+
         ResponseStats {
             total_rings: ring_events.len(),
             positive_responses,
             negative_responses,
-            no_response: ring_events.len().saturating_sub(positive_responses + negative_responses),
+            no_response: ring_events
+                .len()
+                .saturating_sub(positive_responses + negative_responses),
             avg_response_time_ms: None, // TODO: Calculate from timestamps
         }
     }
-    
+
     fn add_custom_state(&mut self, state: CustomLcgpState) {
         self.custom_states.insert(state.name.clone(), state);
     }
-    
+
     fn get_custom_states(&self) -> Vec<CustomLcgpState> {
         self.custom_states.values().cloned().collect()
     }
@@ -227,15 +255,19 @@ impl ServiceState {
 #[tokio::main]
 async fn main() -> Result<()> {
     env_logger::init();
-    
+
     let args = Args::parse();
-    
+
     info!("Starting ChimeNet HTTP Service on port {}", args.port);
     info!("Connecting to MQTT broker: {}", args.broker);
-    
-    let users: Vec<String> = args.users.split(',').map(|s| s.trim().to_string()).collect();
+
+    let users: Vec<String> = args
+        .users
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .collect();
     let state = Arc::new(RwLock::new(ServiceState::new(users.clone())));
-    
+
     // Start MQTT monitoring
     let state_clone = state.clone();
     tokio::spawn(async move {
@@ -243,13 +275,13 @@ async fn main() -> Result<()> {
             error!("MQTT monitoring error: {}", e);
         }
     });
-    
+
     // Create CORS layer
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
         .allow_headers(Any);
-    
+
     // Create router
     let app = Router::new()
         .route("/status", get(handle_status))
@@ -257,16 +289,25 @@ async fn main() -> Result<()> {
         .route("/users/:user/stats", get(handle_user_stats))
         .route("/users/:user/chimes", get(handle_user_chimes))
         .route("/users/:user/chimes/:chime_id", get(handle_chime_details))
-        .route("/users/:user/chimes/:chime_id/status", get(handle_chime_status))
+        .route(
+            "/users/:user/chimes/:chime_id/status",
+            get(handle_chime_status),
+        )
         .route("/events", get(handle_events))
-        .route("/users/:user/chimes/:chime_id/ring", post(handle_ring_chime))
-        .route("/users/:user/chimes/:chime_id/respond", post(handle_respond_chime))
+        .route(
+            "/users/:user/chimes/:chime_id/ring",
+            post(handle_ring_chime),
+        )
+        .route(
+            "/users/:user/chimes/:chime_id/respond",
+            post(handle_respond_chime),
+        )
         .route("/custom-states", get(handle_custom_states))
         .route("/custom-states", post(handle_create_custom_state))
         .route("/users/:user/chimes/:chime_id/mode", post(handle_set_mode))
         .layer(cors)
         .with_state(state);
-    
+
     info!("HTTP service listening on port {}", args.port);
     info!("Available endpoints:");
     info!("  GET /status - Service status");
@@ -281,10 +322,10 @@ async fn main() -> Result<()> {
     info!("  GET /custom-states - List custom LCGP states");
     info!("  POST /custom-states - Create custom LCGP state");
     info!("  POST /users/:user/chimes/:chime_id/mode - Set chime mode");
-    
+
     let listener = tokio::net::TcpListener::bind(&format!("127.0.0.1:{}", args.port)).await?;
     axum::serve(listener, app).await?;
-    
+
     Ok(())
 }
 
@@ -296,14 +337,18 @@ async fn handle_status(State(state): State<SharedState>) -> Json<ServiceStatus> 
 
 async fn handle_users(State(state): State<SharedState>) -> Json<Vec<UserStats>> {
     let state_guard = state.read().await;
-    let users: Vec<UserStats> = state_guard.monitored_users.iter()
-        .map(|user| state_guard.get_user_stats(user).unwrap_or(UserStats {
-            user: user.clone(),
-            total_chimes: 0,
-            online_chimes: 0,
-            last_activity: None,
-            events_count: 0,
-        }))
+    let users: Vec<UserStats> = state_guard
+        .monitored_users
+        .iter()
+        .map(|user| {
+            state_guard.get_user_stats(user).unwrap_or(UserStats {
+                user: user.clone(),
+                total_chimes: 0,
+                online_chimes: 0,
+                last_activity: None,
+                events_count: 0,
+            })
+        })
         .collect();
     Json(users)
 }
@@ -363,24 +408,25 @@ async fn handle_events(
 ) -> Json<Vec<ChimeEvent>> {
     let state_guard = state.read().await;
     let mut events = state_guard.events.clone();
-    
+
     // Filter by user if specified
     if let Some(user) = params.get("user") {
         events.retain(|e| e.user == *user);
     }
-    
+
     // Filter by event type if specified
     if let Some(event_type) = params.get("type") {
         events.retain(|e| e.event_type == *event_type);
     }
-    
+
     // Limit results
-    let limit = params.get("limit")
+    let limit = params
+        .get("limit")
         .and_then(|l| l.parse::<usize>().ok())
         .unwrap_or(50);
-    
+
     events.truncate(limit);
-    
+
     Json(events)
 }
 
@@ -427,10 +473,13 @@ async fn handle_ring_chime(
             duration_ms: ring_request.duration_ms,
             timestamp: chrono::Utc::now(),
         };
-        
+
         // This would need to be implemented - storing MQTT clients properly
-        info!("Would send ring request to {}/{}: {:?}", user, chime_id, ring_req);
-        
+        info!(
+            "Would send ring request to {}/{}: {:?}",
+            user, chime_id, ring_req
+        );
+
         Ok(Json(ApiResponse {
             success: true,
             message: "Ring request sent".to_string(),
@@ -462,7 +511,7 @@ async fn handle_respond_chime(
             ));
         }
     };
-    
+
     let state_guard = state.read().await;
     if let Some(_mqtt_client) = state_guard.mqtt_clients.get(&user) {
         let response_msg = ChimeResponseMessage {
@@ -471,9 +520,12 @@ async fn handle_respond_chime(
             node_id: "http_service".to_string(),
             original_chime_id: Some(chime_id.clone()),
         };
-        
-        info!("Would send response to {}/{}: {:?}", user, chime_id, response_msg);
-        
+
+        info!(
+            "Would send response to {}/{}: {:?}",
+            user, chime_id, response_msg
+        );
+
         Ok(Json(ApiResponse {
             success: true,
             message: "Response sent".to_string(),
@@ -500,7 +552,7 @@ async fn handle_create_custom_state(
 ) -> Json<ApiResponse> {
     let mut state_guard = state.write().await;
     state_guard.add_custom_state(custom_state.clone());
-    
+
     Json(ApiResponse {
         success: true,
         message: format!("Custom state '{}' created", custom_state.name),
@@ -520,7 +572,7 @@ async fn handle_set_mode(
         custom if custom.starts_with("custom:") => {
             let name = custom.strip_prefix("custom:").unwrap_or("").to_string();
             LcgpMode::Custom(name)
-        },
+        }
         _ => {
             return Err((
                 StatusCode::BAD_REQUEST,
@@ -530,11 +582,11 @@ async fn handle_set_mode(
             ));
         }
     };
-    
+
     let state_guard = state.read().await;
     if let Some(_mqtt_client) = state_guard.mqtt_clients.get(&user) {
         info!("Would set mode for {}/{} to: {:?}", user, chime_id, mode);
-        
+
         Ok(Json(ApiResponse {
             success: true,
             message: format!("Mode set to {:?}", mode),
@@ -558,7 +610,7 @@ async fn start_mqtt_monitoring(
         let broker_url = broker_url.clone();
         let user = user.clone();
         let state = state.clone();
-        
+
         tokio::spawn(async move {
             let client_id = format!("http_service_monitor_{}", user);
             let mut mqtt = match ChimeNetMqtt::new(&broker_url, &user, &client_id).await {
@@ -568,40 +620,46 @@ async fn start_mqtt_monitoring(
                     return;
                 }
             };
-            
+
             if let Err(e) = mqtt.connect().await {
                 error!("Failed to connect MQTT client for user {}: {}", user, e);
                 return;
             }
-            
+
             info!("Started monitoring user: {}", user);
-            
+
             // Subscribe to all chime topics for this user
             let _topic = format!("/{}/chime/+/+", user);
-            if let Err(e) = mqtt.subscribe_to_user_chimes(&user, {
-                let state = state.clone();
-                let user = user.clone();
-                move |topic, payload| {
+            if let Err(e) = mqtt
+                .subscribe_to_user_chimes(&user, {
                     let state = state.clone();
                     let user = user.clone();
-                    let topic = topic.clone();
-                    let payload = payload.clone();
-                    
-                    tokio::spawn(async move {
-                        if let Err(e) = handle_mqtt_message(topic, payload, user, state).await {
-                            error!("Error handling MQTT message: {}", e);
-                        }
-                    });
-                }
-            }).await {
-                error!("Failed to subscribe to chime topics for user {}: {}", user, e);
+                    move |topic, payload| {
+                        let state = state.clone();
+                        let user = user.clone();
+                        let topic = topic.clone();
+                        let payload = payload.clone();
+
+                        tokio::spawn(async move {
+                            if let Err(e) = handle_mqtt_message(topic, payload, user, state).await {
+                                error!("Error handling MQTT message: {}", e);
+                            }
+                        });
+                    }
+                })
+                .await
+            {
+                error!(
+                    "Failed to subscribe to chime topics for user {}: {}",
+                    user, e
+                );
             }
-            
+
             // Keep the connection alive
             tokio::time::sleep(tokio::time::Duration::from_secs(u64::MAX)).await;
         });
     }
-    
+
     Ok(())
 }
 
@@ -615,21 +673,22 @@ async fn handle_mqtt_message(
     if parts.len() < 4 {
         return Ok(());
     }
-    
+
     let chime_id = parts[3];
     let message_type = parts[4];
-    
+
     let event = ChimeEvent {
         timestamp: chrono::Utc::now(),
         event_type: message_type.to_string(),
         user: user.clone(),
         chime_id: chime_id.to_string(),
-        data: serde_json::from_str(&payload).unwrap_or_else(|_| serde_json::json!({"raw": payload})),
+        data: serde_json::from_str(&payload)
+            .unwrap_or_else(|_| serde_json::json!({"raw": payload})),
     };
-    
+
     let mut state_guard = state.write().await;
     state_guard.add_event(event);
-    
+
     // Update internal state based on message type
     match message_type {
         "list" => {
@@ -640,7 +699,8 @@ async fn handle_mqtt_message(
         }
         "status" => {
             if let Ok(status) = serde_json::from_str::<ChimeStatus>(&payload) {
-                state_guard.chime_statuses
+                state_guard
+                    .chime_statuses
                     .entry(user.clone())
                     .or_insert_with(HashMap::new)
                     .insert(chime_id.to_string(), status);
@@ -649,16 +709,22 @@ async fn handle_mqtt_message(
         }
         "ring" => {
             if let Ok(ring_request) = serde_json::from_str::<ChimeRingRequest>(&payload) {
-                info!("Ring request received for {}/{}: {:?}", user, chime_id, ring_request);
+                info!(
+                    "Ring request received for {}/{}: {:?}",
+                    user, chime_id, ring_request
+                );
             }
         }
         "response" => {
             if let Ok(response_msg) = serde_json::from_str::<ChimeResponseMessage>(&payload) {
-                info!("Response received from {}/{}: {:?}", user, chime_id, response_msg.response);
+                info!(
+                    "Response received from {}/{}: {:?}",
+                    user, chime_id, response_msg.response
+                );
             }
         }
         _ => {}
     }
-    
+
     Ok(())
 }

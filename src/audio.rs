@@ -1,4 +1,4 @@
-use crate::types::notes::{frequency_for_note, chord_notes};
+use crate::types::notes::{chord_notes, frequency_for_note};
 use crate::types::Result;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, Host, SampleFormat, Stream, StreamConfig};
@@ -45,7 +45,10 @@ impl AudioPlayer {
         thread::spawn(move || {
             while let Ok(command) = receiver.recv() {
                 match command {
-                    AudioCommand::PlayNote { frequency, duration_ms } => {
+                    AudioCommand::PlayNote {
+                        frequency,
+                        duration_ms,
+                    } => {
                         let mut state = audio_state_cmd.lock().unwrap();
                         state.add_note(frequency, duration_ms, sample_rate);
                     }
@@ -76,7 +79,10 @@ impl AudioPlayer {
 
     pub fn play_note(&self, note: &str, duration_ms: u64) -> Result<()> {
         if let Some(frequency) = frequency_for_note(note) {
-            self.sender.send(AudioCommand::PlayNote { frequency, duration_ms })?;
+            self.sender.send(AudioCommand::PlayNote {
+                frequency,
+                duration_ms,
+            })?;
         }
         Ok(())
     }
@@ -159,7 +165,8 @@ impl AudioState {
             }
 
             let t = note.current_sample as f32 / sample_rate as f32;
-            let note_sample = (t * note.frequency * 2.0 * std::f32::consts::PI).sin() * note.amplitude;
+            let note_sample =
+                (t * note.frequency * 2.0 * std::f32::consts::PI).sin() * note.amplitude;
             sample += note_sample;
             note.current_sample += 1;
         }
@@ -224,7 +231,12 @@ impl ChimePlayer {
         })
     }
 
-    pub fn play_chime(&self, notes: Option<&[String]>, chords: Option<&[String]>, duration_ms: Option<u64>) -> Result<()> {
+    pub fn play_chime(
+        &self,
+        notes: Option<&[String]>,
+        chords: Option<&[String]>,
+        duration_ms: Option<u64>,
+    ) -> Result<()> {
         let duration = duration_ms.unwrap_or(500);
 
         if let Some(notes) = notes {
