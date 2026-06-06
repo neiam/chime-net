@@ -17,7 +17,7 @@ jobs:
     strategy:
       matrix:
         include:
-          - runner: ubuntu-latest
+          - runner: arc-runner-set
             arch: x86_64
           - runner: [self-hosted, runner-aarch64]
             arch: aarch64
@@ -121,26 +121,30 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
+            runner: arc-runner-set
             name: chimenet-x86_64-linux-gnu.tar.gz
             archive_cmd: tar -czf
             binary_ext: ""
             rust: "1.86"
           - os: [self-hosted, runner-aarch64]
+            runner: [self-hosted, runner-aarch64]
             name: chimenet-aarch64-linux-gnu.tar.gz
             archive_cmd: tar -czf
             binary_ext: ""
             rust: "1.86"
           - os: macos-latest
+            runner: macos-latest
             name: chimenet-aarch64-macos.tar.gz
             archive_cmd: tar -czf
             binary_ext: ""
             rust: "1.86"
           - os: windows-latest
+            runner: windows-latest
             name: chimenet-x86_64-windows.zip
             archive_cmd: 7z a
             binary_ext: ".exe"
             rust: "1.86"
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.runner }}
 
     steps:
       - uses: actions/checkout@v4
@@ -249,7 +253,7 @@ jobs:
 
   create-release:
     name: Create Release
-    runs-on: ubuntu-latest
+    runs-on: arc-runner-set
     if: startsWith(github.ref, 'refs/tags/v')
     needs: release
     permissions:
